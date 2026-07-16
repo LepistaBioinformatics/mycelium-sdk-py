@@ -77,6 +77,26 @@ def test_encode_roundtrip_fixture():
     assert len(back.licensed_resources.to_licenses_vector()) == FIXTURE_RECORDS
 
 
+def test_decode_go_encoded_profile():
+    """True cross-language check: decode bytes produced by the *Go* SDK's
+    encoder (committed as mock/cross_go_encoded.b64), not a Python
+    self-round-trip. Fails if Go and Python drift on the wire format."""
+    blob_path = os.path.join(
+        os.path.dirname(__file__), "mock", "cross_go_encoded.b64"
+    )
+    with open(blob_path, "r") as handle:
+        blob = handle.read()
+
+    profile = decode_and_decompress_profile_from_base64(blob)
+
+    assert profile.acc_id == FIXTURE_ACC_ID
+    records = profile.licensed_resources.to_licenses_vector()
+    assert len(records) == FIXTURE_RECORDS
+    ownerships = profile.tenants_ownership.to_ownership_vector()
+    assert len(ownerships) == 1
+    assert ownerships[0].id == FIXTURE_TENANT_ID
+
+
 def test_encode_emits_perm_as_string():
     profile = Profile.model_validate_json(_read_fixture_bytes())
     encoded = compress_and_encode_profile_to_base64(profile)
