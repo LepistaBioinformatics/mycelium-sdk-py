@@ -1,21 +1,27 @@
 name: Bump version
 
-# Generates the next version from Conventional Commits using commitizen:
-# updates src/myc_http_tools/__version__.py + pyproject.toml + CHANGELOG, commits
-# ("bump: ..."), tags v$version, and pushes. The pushed tag triggers release.yml.
+# On every push to main, derives the next version from Conventional Commits using
+# commitizen. When there is something to release it updates the version files +
+# CHANGELOG, commits ("bump: ..."), tags v$version, pushes, and dispatches release.yml
+# to publish. When there is nothing to bump (e.g. only dependency or chore commits) it
+# is a no-op — the run stays green instead of failing.
 on:
   push:
     branches: [main]
 
 concurrency: bump-${{ github.ref }}
 
+permissions:
+  contents: write # push the bump commit + tag
+  actions: write # dispatch release.yml
+
 jobs:
   bump:
-    # Skip the commit that this workflow itself creates (bump_message starts with "bump:").
-    if: ${{ !startsWith(github.event.head_commit.message, 'bump:') }}
+    # Skip this workflow's own bump commits and automated dependency bumps.
+    if: >-
+      github.actor != 'dependabot[bot]'
+      && !startsWith(github.event.head_commit.message, 'bump:')
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,8 +40,32 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Bump version and tag
-        run: cz bump --yes --changelog
+      - name: Bump version
+        id: bump
+        run: |
+          before="$(cz version --project)"
+          # cz bump exits non-zero when there are no bumpable commits; that is a
+          # no-op for us, not a failure, so swallow it and detect via the version.
+          cz bump --yes --changelog || true
+          after="$(cz version --project)"
+          if [ "$before" = "$after" ]; then
+            echo "No bumpable commits since $before — nothing to release."
+            echo "bumped=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Bumped $before -> $after"
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+            echo "version=$after" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Push
+      - name: Push commit and tag
+        if: steps.bump.outputs.bumped == 'true'
         run: git push --follow-tags
+
+      # A tag pushed with GITHUB_TOKEN does not trigger release.yml (GitHub's
+      # recursion guard), so dispatch it explicitly on the freshly created tag.
+      - name: Trigger release
+        if: steps.bump.outputs.bumped == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.bump.outputs.version }}
+        run: gh workflow run release.yml --ref "v${VERSION}"

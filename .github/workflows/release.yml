@@ -1,15 +1,18 @@
 name: Release
 
-# Builds the package and publishes it to PyPI (https://pypi.org/project/mycelium-http-tools/)
-# whenever a version tag (v*) is pushed — typically created by bump.yml.
+# Builds and publishes mycelium-http-tools to PyPI via Trusted Publishing (OIDC).
+# No API token is stored. Runs when a version tag (v*) is pushed, when bump.yml
+# dispatches it after an automatic bump, or when triggered manually from the
+# Actions tab (to (re)publish the current version).
 #
-# Publishing uses PyPI Trusted Publishing (OIDC): no API token is stored. Configure a
-# trusted publisher for the "mycelium-http-tools" project on PyPI pointing at this repo,
-# workflow "release.yml", and environment "pypi".
+# Configure the PyPI trusted publisher once (https://pypi.org/manage/account/publishing/):
+#   project: mycelium-http-tools   owner: LepistaBioinformatics
+#   repository: mycelium-sdk-py    workflow: release.yml    environment: pypi
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
 
 jobs:
   publish:
