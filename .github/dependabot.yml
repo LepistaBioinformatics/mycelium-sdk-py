@@ -1,0 +1,28 @@
+version: 2
+updates:
+  # Python dependencies (managed by Poetry). Group every update into a single
+  # PR to cut noise, and group security fixes too so transitive bumps that need
+  # their parent updated (e.g. starlette via fastapi) resolve together.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      python-dependencies:
+        patterns:
+          - "*"
+      python-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # GitHub Actions used by the CI / bump / release workflows.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
