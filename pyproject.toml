@@ -16,7 +16,7 @@ packages = [
 ]
 
 [project.optional-dependencies]
-dev = ["mypy>=1.18.2", "pre-commit>=4.3.0", "commitizen>=4.9.1"]
+dev = ["mypy>=2.3.0", "pre-commit>=4.3.0", "commitizen>=4.9.1"]
 fastapi = [
     "fastapi[standard] (>=0.117.1,<1.0.0)",
     "zstandard (>=0.25.0,<0.26.0)",
@@ -41,6 +41,6 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.group.dev.dependencies]
 commitizen = "^4.9.1"
-mypy = "^1.18.2"
+mypy = "^2.3.0"
 pre-commit = "^4.3.0"
 pytest = "^9.0.3"
