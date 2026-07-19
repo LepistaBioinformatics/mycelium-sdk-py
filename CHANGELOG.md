@@ -1,3 +1,14 @@
+## v0.2.0 (2026-07-19)
+
+### Feat
+
+- add compress_and_encode_profile_to_base64
+- bring Profile to full parity with the gateway
+
+### Fix
+
+- rollback to the last changes in decoder
+
 ## v0.1.0a7 (2025-12-02)
 
 ### Fix
