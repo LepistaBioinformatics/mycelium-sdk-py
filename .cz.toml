@@ -1,5 +1,5 @@
 [tool.commitizen]
-version = "0.1.0a7"
+version = "0.2.0a1"
 version_files = ["src/myc_http_tools/__version__.py", "pyproject.toml"]
 name = "cz_conventional_commits"
 tag_format = "v$version"

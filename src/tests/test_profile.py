@@ -295,9 +295,10 @@ class TestProfile:
 
         result = profile.with_read_access()
 
-        # Should return the same profile when licensed_resources is None
-        assert result == profile
+        # Following the gateway, the permission filter is always recorded even
+        # when there are no licensed resources (no short-circuit).
         assert result.licensed_resources is None
+        assert result.filtering_state == ["1:permission:0"]
 
     def test_with_write_access_without_licensed_resources(self):
         """Test with_write_access when licensed_resources is None"""
@@ -315,9 +316,10 @@ class TestProfile:
 
         result = profile.with_write_access()
 
-        # Should return the same profile when licensed_resources is None
-        assert result == profile
+        # Following the gateway, the permission filter is always recorded even
+        # when there are no licensed resources (no short-circuit).
         assert result.licensed_resources is None
+        assert result.filtering_state == ["1:permission:1"]
 
     def test_with_read_access_with_licensed_resources(self):
         """Test with_read_access when licensed_resources is present"""
@@ -611,15 +613,16 @@ class TestProfile:
             licensed_resources=licensed_resources,
         )
 
-        # Test with_read_access
+        # with_read_access keeps the read resource; the filtered result is a
+        # fresh records-only union (urls dropped).
         result_read = profile.with_read_access()
         assert result_read.licensed_resources.urls is None
         assert result_read.licensed_resources.records is not None
 
-        # Test with_write_access
+        # with_write_access filters out the read-only resource; an empty result
+        # collapses licensed_resources to None (gateway behavior).
         result_write = profile.with_write_access()
-        assert result_write.licensed_resources.urls is None
-        assert result_write.licensed_resources.records is not None
+        assert result_write.licensed_resources is None
 
     def test_profile_equality(self):
         """Test Profile equality comparison"""
@@ -1965,7 +1968,7 @@ class TestProfile:
         assert profile.licensed_resources.records[0].role == "admin"
         assert profile.filtering_state == [
             f"1:accountId:{customer_id}",
-            "2:permission:read",
+            "2:permission:0",
             "3:role:admin,user",
         ]
 
@@ -2029,9 +2032,12 @@ class TestProfile:
         # Step 3: Filter by roles (still no matches)
         profile = profile.with_roles(__GLOBAL_ROLES)
         assert profile.licensed_resources is None  # Still no matches
+        # The permission filter is now recorded even with no matches (gateway
+        # behavior, no short-circuit).
         assert profile.filtering_state == [
             f"1:accountId:{customer_id}",
-            "2:role:admin,user",
+            "2:permission:0",
+            "3:role:admin,user",
         ]
 
         # Step 4: Get related accounts should raise an error

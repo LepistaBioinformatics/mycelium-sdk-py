@@ -3,7 +3,7 @@ from typing import Optional, Self
 from urllib.parse import parse_qs, urlparse
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
 
 from .permission import Permission
@@ -20,6 +20,18 @@ class LicensedResource(BaseModel):
     role_id: UUID
     perm: Permission
     verified: bool
+    permit_flags: Optional[list[str]] = Field(default=None)
+    deny_flags: Optional[list[str]] = Field(default=None)
+
+    @field_validator("perm", mode="before")
+    @classmethod
+    def _coerce_perm(cls, value: object) -> object:
+        """Accept perm as the wire string ("read"/"write") or as the integer
+        form (0/1) used in the URL representation, matching the gateway and the
+        Go SDK."""
+        if isinstance(value, int) and not isinstance(value, bool):
+            return Permission.from_i32(value)
+        return value
 
     # --------------------------------------------------------------------------
     # PRIVATE METHODS
@@ -139,6 +151,15 @@ class LicensedResource(BaseModel):
         except Exception:
             raise ValueError("Failed to decode account name")
 
+        # Extract optional permit/deny flags (pf/df parameters)
+        permit_flags = None
+        if "pf" in query_params and query_params["pf"][0]:
+            permit_flags = query_params["pf"][0].split(",")
+
+        deny_flags = None
+        if "df" in query_params and query_params["df"][0]:
+            deny_flags = query_params["df"][0].split(",")
+
         # Create and return the LicensedResource instance
         return cls(
             tenant_id=UUID(tenant_id),
@@ -149,6 +170,8 @@ class LicensedResource(BaseModel):
             sys_acc=sys_acc,
             acc_name=name_decoded,
             verified=verified,
+            permit_flags=permit_flags,
+            deny_flags=deny_flags,
         )
 
 

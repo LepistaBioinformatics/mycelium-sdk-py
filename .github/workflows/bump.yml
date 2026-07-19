@@ -1,0 +1,41 @@
+name: Bump version
+
+# Generates the next version from Conventional Commits using commitizen:
+# updates src/myc_http_tools/__version__.py + pyproject.toml + CHANGELOG, commits
+# ("bump: ..."), tags v$version, and pushes. The pushed tag triggers release.yml.
+on:
+  push:
+    branches: [main]
+
+concurrency: bump-${{ github.ref }}
+
+jobs:
+  bump:
+    # Skip the commit that this workflow itself creates (bump_message starts with "bump:").
+    if: ${{ !startsWith(github.event.head_commit.message, 'bump:') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install commitizen
+        run: pip install commitizen
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump version and tag
+        run: cz bump --yes --changelog
+
+      - name: Push
+        run: git push --follow-tags

@@ -26,24 +26,30 @@ logger = logging.getLogger(__name__)
 
 def decode_and_decompress_profile_from_base64_robust(
     profile: Union[str, bytes],
+    strict: bool = True,
 ) -> Profile:
-    """Decode and decompress a profile from Base64 with fallback support.
+    """Decode and decompress a profile from Base64.
 
-    This function first tries to decode and decompress using ZSTD (the expected
-    format). If that fails, it falls back to trying plain Base64 decoding,
-    which is useful for development or when profiles are sent without compression.
+    Reverses the gateway header encoding: Base64 STANDARD decode -> ZSTD
+    decompress -> JSON deserialize.
 
     Args:
-        profile: The Base64-encoded profile string or bytes. May be ZSTD-compressed
-            or plain Base64.
+        profile: The Base64-encoded profile string or bytes.
+        strict: When True (the default), a ZSTD decompression failure raises.
+            When False, the Base64-decoded bytes are treated as
+            already-uncompressed (dev mode where the gateway did not compress
+            the profile). Mirrors the JS/Go SDK ``strict`` option.
 
     Returns:
-        Profile: The decoded and decompressed profile.
+        Profile: The decoded profile.
 
     Raises:
-        ProfileDecodingError: If there is an error during decoding, decompression,
-            or deserialization, and all fallback methods have been exhausted.
+        ProfileDecodingError: On invalid Base64, failed decompression (strict),
+            or failed deserialization.
     """
+    if not profile:
+        raise ProfileDecodingError("Profile input is empty")
+
     # Decode from Base64 first
     try:
         if isinstance(profile, str):
@@ -57,21 +63,22 @@ def decode_and_decompress_profile_from_base64_robust(
             f"Failed to decode base64 profile: {e}"
         ) from e
 
-    # Try ZSTD decompression first (expected format)
+    # ZSTD decompression (expected format)
     if ZSTD_AVAILABLE:
         try:
             decompressor = zstd.ZstdDecompressor()
             decompressed_profile = decompressor.decompress(decoded_profile)
             logger.debug("Successfully decompressed profile using ZSTD")
         except Exception as zstd_error:
-            # If ZSTD fails, try treating as plain Base64 (fallback for development)
-            # This handles cases where profiles are sent without ZSTD compression
-            error_msg = str(zstd_error)
+            if strict:
+                raise ProfileDecodingError(
+                    f"Failed to decompress profile: {zstd_error}"
+                ) from zstd_error
+            # Non-strict: treat the Base64-decoded bytes as uncompressed.
             logger.info(
-                f"ZSTD decompression failed ({error_msg}), "
-                "trying plain Base64 decoding as fallback"
+                f"ZSTD decompression failed ({zstd_error}), "
+                "falling back to uncompressed bytes"
             )
-            # Use decoded_profile directly (already Base64-decoded bytes)
             decompressed_profile = decoded_profile
     else:
         # ZSTD not available, use plain Base64
