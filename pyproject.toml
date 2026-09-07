@@ -7,7 +7,7 @@ license = { text = "Apache 2.0" }
 readme = "README.md"
 requires-python = ">=3.12,<4.0"
 
-dependencies = ["pydantic (>=2.11.9,<3.0.0)", "urllib3 (>=2.7.0,<3.0.0)"]
+dependencies = ["pydantic (>=2.13.5,<3.0.0)", "urllib3 (>=2.7.0,<3.0.0)"]
 
 [tool.poetry]
 packages = [
@@ -16,9 +16,9 @@ packages = [
 ]
 
 [project.optional-dependencies]
-dev = ["mypy>=2.3.0", "pre-commit>=4.3.0", "commitizen>=4.9.1"]
+dev = ["mypy>=2.3.1", "pre-commit>=4.6.2", "commitizen>=4.18.0"]
 fastapi = [
-    "fastapi[standard] (>=0.117.1,<1.0.0)",
+    "fastapi[standard] (>=0.141.1,<1.0.0)",
     "zstandard (>=0.25.0,<0.26.0)",
 ]
 
@@ -40,7 +40,7 @@ requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.group.dev.dependencies]
-commitizen = "^4.9.1"
-mypy = "^2.3.0"
-pre-commit = "^4.3.0"
+commitizen = "^4.18.0"
+mypy = "^2.3.1"
+pre-commit = "^4.6.2"
 pytest = "^9.0.3"
