@@ -5,21 +5,36 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.12", "3.14"]
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
 
       - name: Install
-        run: pip install -e ".[dev,fastapi]" pytest
+        run: pip install -e ".[dev,fastapi,signature]" pytest build
 
       - name: Test
         run: pytest src/tests -q
+
+      - name: Installed wheel
+        run: |
+          python -m build --wheel
+          python -m venv "$RUNNER_TEMP/psig-wheel"
+          "$RUNNER_TEMP/psig-wheel/bin/pip" install dist/*.whl
+          "$RUNNER_TEMP/psig-wheel/bin/pip" install 'mycelium-http-tools[signature,fastapi]'
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/psig-wheel/bin/python" "$GITHUB_WORKSPACE/scripts/profile_signature_distribution_smoke.py" "$GITHUB_WORKSPACE/src/tests/mock/profile-signature/vectors.json"
 
       - name: Type check
         run: >-
@@ -27,3 +42,34 @@ jobs:
           --no-warn-incomplete-stub --allow-redefinition --implicit-optional
           --explicit-package-bases --namespace-packages --allow-untyped-defs
           src/myc_http_tools
+
+  # The `signature` extra is optional: the package must keep working without
+  # PyJWT/cryptography, and a configured public key must then fail loudly
+  # instead of silently disabling verification.
+  basic-install:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.12", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install without the signature extra
+        run: |
+          python -m pip install build
+          python -m build --wheel
+          pip install dist/*.whl
+          pip install 'mycelium-http-tools[fastapi]' pytest
+
+      - name: Legacy suites
+        run: >-
+          pytest src/tests -q
+          --ignore=src/tests/test_profile_signature.py
+          --ignore=src/tests/test_profile_signature_fastapi.py
+
+      - name: Missing extra is a configuration error
+        run: python scripts/check_signature_extra_missing.py
