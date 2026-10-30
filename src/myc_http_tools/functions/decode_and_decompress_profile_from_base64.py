@@ -66,7 +66,11 @@ def decode_and_decompress_profile_from_base64_robust(
     # ZSTD decompression (expected format)
     if ZSTD_AVAILABLE:
         try:
-            decompressor = zstd.ZstdDecompressor()
+            # Streaming API on purpose: the gateway compresses with
+            # `zstd::encode_all`, whose frames do not declare the content
+            # size, and `ZstdDecompressor().decompress()` rejects those
+            # ("could not determine content size in frame header").
+            decompressor = zstd.ZstdDecompressor().decompressobj()
             decompressed_profile = decompressor.decompress(decoded_profile)
             logger.debug("Successfully decompressed profile using ZSTD")
         except Exception as zstd_error:
