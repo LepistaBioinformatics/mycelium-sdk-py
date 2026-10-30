@@ -26,8 +26,11 @@ pip install mycelium-http-tools
 # With the FastAPI adapter (+ zstandard)
 pip install mycelium-http-tools[fastapi]
 
+# With profile signature verification (PyJWT[crypto])
+pip install mycelium-http-tools[fastapi,signature]
+
 # Development (all extras + tooling)
-pip install mycelium-http-tools[dev,fastapi]
+pip install mycelium-http-tools[dev,fastapi,signature]
 ```
 
 ## Core usage
@@ -92,7 +95,7 @@ async def admin(profile: Profile = Depends(get_profile_from_header_required)):
 
 ```python
 from fastapi import FastAPI, Request
-from fastapi.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from myc_http_tools.fastapi import profile_middleware
 
 app = FastAPI()
@@ -123,12 +126,93 @@ header resolves to `None`; in production a missing header responds `403` and an 
 header `401`. The environment is read from the `ENVIRONMENT` variable (default
 `development`).
 
+## Profile signature verification (opt-in)
+
+When the gateway is configured with `[core.profileSigning]`, it adds
+`x-mycelium-profile-signature` to every request that carries
+`x-mycelium-profile`: a compact JWS (`alg: EdDSA`, `kid: <key version>`) over
+`{iat, ph, aud}`, where `ph` is the SHA-256 of the exact profile header and
+`aud` the downstream service name. Verification is local: no call to the
+gateway, no key fetching.
+
+> **Rollout order is mandatory.** Confirm the gateway in front of this service
+> is already signing **before** setting any public key here. A service that
+> verifies behind a gateway that does not sign rejects every request (403).
+> To roll back, remove the public keys here first, then disable signing in the
+> gateway.
+
+Enable it by installing the `signature` extra and setting the gateway's
+**public** key(s) (PEM SubjectPublicKeyInfo, with real line breaks):
+
+```bash
+export MYC_PROFILE_PUBLIC_KEY_1="$(cat profile-signing-v1.pub.pem)"
+# During rotation, trust both versions:
+export MYC_PROFILE_PUBLIC_KEY_2="$(cat profile-signing-v2.pub.pem)"
+# Optional: accepted clock skew, both directions (default 60 seconds)
+export MYC_PROFILE_SIGNATURE_TOLERANCE_SECONDS=60
+# Optional: reject pairs signed for another downstream service
+export MYC_PROFILE_SIGNATURE_AUDIENCE=billing-api
+```
+
+Validate the configuration at startup so a misconfigured service never
+starts (otherwise it is loaded on first use and requests fail with 500):
+
+```python
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from myc_http_tools import configure_profile_signature
+
+@asynccontextmanager
+async def lifespan(app):
+    configure_profile_signature()  # raises ProfileSignatureConfigurationError
+    yield
+
+app = FastAPI(lifespan=lifespan)
+```
+
+With at least one `MYC_PROFILE_PUBLIC_KEY_*` set, the four FastAPI entry
+points (`get_profile_from_request`, `profile_middleware`,
+`get_profile_from_header`, `get_profile_from_header_required`) verify before
+decoding and answer **403** `Unable to verify Mycelium profile` on any
+signature rejection, **in every `ENVIRONMENT`**: the development leniency never applies to
+a failed signature. Duplicate profile/signature headers are rejected. Without
+those variables nothing changes. The required header dependency preserves
+FastAPI 422 when the profile header is absent. Internal/configuration errors
+return generic 500 and never run the handler.
+
+Any present but invalid variable (bad suffix, empty value, private key,
+non-Ed25519 key, missing `signature` extra, invalid tolerance) is a
+configuration error, never "verification disabled". Tolerance must be a
+positive integer <= 9007199254740991, matching the JavaScript SDK.
+
+Custom integrations can call the strict functions directly; the raw decoder
+`decode_and_decompress_profile_from_base64` does **not** verify anything:
+
+```python
+from myc_http_tools import load_profile_signature_verifier_from_env
+from myc_http_tools.functions import verify_and_decode_profile
+
+verifier = load_profile_signature_verifier_from_env()  # once, at startup
+if verifier is None:
+    raise RuntimeError("Profile verification must be configured for this service")
+profile = verify_and_decode_profile(profile_header, signature_header, verifier)
+```
+
+Limits (by design): a captured valid pair can be replayed during the
+tolerance window (and to other services unless `MYC_PROFILE_SIGNATURE_AUDIENCE`
+is set); only `x-mycelium-profile` is signed, so derive identity from the
+profile, not from `x-mycelium-email`/`x-mycelium-role` alone. Mount the
+middleware only where a profile is required: public or health routes do not
+receive a profile from the gateway.
+
 ## Error handling
 
 All SDK errors extend `MyceliumError` (`message`, `code`, `exp_true`):
 
 | Error | Code | Raised by |
 |---|---|---|
+| `ProfileSignatureError` | `MYC_PROFILE_SIGNATURE_INVALID` | `verify_profile_signature` / `verify_and_decode_profile` (carries a log-safe `reason`) |
+| `ProfileSignatureConfigurationError` | `MYC_PROFILE_SIGNATURE_CONFIG_INVALID` | Invalid `MYC_PROFILE_*` configuration |
 | `ProfileDecodingError` | `MYC00020` | `decode_and_decompress_profile_from_base64` on any decode failure |
 | `InsufficientLicensesError` | `MYC00019` | `get_related_account_or_error()` when licensed resources are present but empty |
 | `InsufficientPrivilegesError` | `MYC00019` | Any method requiring a privilege the profile lacks (carries `filtering_state`) |
