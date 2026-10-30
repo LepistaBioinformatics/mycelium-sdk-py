@@ -39,3 +39,41 @@ class ProfileDecodingError(MyceliumError):
 
     def __init__(self, message: str):
         super().__init__(message=message, code="MYC00020", exp_true=False)
+
+
+PROFILE_SIGNATURE_INVALID_CODE = "MYC_PROFILE_SIGNATURE_INVALID"
+
+PROFILE_SIGNATURE_CONFIG_INVALID_CODE = "MYC_PROFILE_SIGNATURE_CONFIG_INVALID"
+
+
+class ProfileSignatureConfigurationError(MyceliumError):
+    """Raised when the profile signature verification configuration is invalid.
+
+    Any ``MYC_PROFILE_PUBLIC_KEY_*`` variable means "verification requested":
+    a malformed one must stop the service instead of silently disabling
+    verification. The message names variables, never their values.
+    """
+
+    def __init__(self, message: str):
+        super().__init__(
+            message=message,
+            code=PROFILE_SIGNATURE_CONFIG_INVALID_CODE,
+            exp_true=False,
+        )
+
+
+class ProfileSignatureError(MyceliumError):
+    """Raised when a profile signature fails verification.
+
+    ``reason`` is a stable, log-safe identifier (for example
+    ``timestamp_out_of_tolerance``). It must not be returned to clients:
+    HTTP integrations answer with a generic message.
+    """
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(
+            message=f"Profile signature rejected: {reason}",
+            code=PROFILE_SIGNATURE_INVALID_CODE,
+            exp_true=True,
+        )

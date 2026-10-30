@@ -3,6 +3,12 @@
 This module provides middleware and dependencies for extracting user profiles
 from HTTP headers in FastAPI applications. The profile is expected to be
 Base64-encoded and ZSTD-compressed in the 'x-mycelium-profile' header.
+
+Signature verification: when any ``MYC_PROFILE_PUBLIC_KEY_*`` is configured,
+all four entry points verify ``x-mycelium-profile-signature`` before decoding
+and reject failures with 403 in every environment (see
+``enforce_profile_signature``). Without that configuration the behavior below
+is unchanged.
 """
 
 import logging
@@ -12,12 +18,22 @@ from typing import Optional
 from myc_http_tools.exceptions import ProfileDecodingError
 from myc_http_tools.functions import decode_and_decompress_profile_from_base64
 from myc_http_tools.models.profile import Profile
-from myc_http_tools.settings import DEFAULT_PROFILE_KEY
+from myc_http_tools.settings import (
+    DEFAULT_PROFILE_KEY,
+    DEFAULT_PROFILE_SIGNATURE_KEY,
+)
 
 try:
     from fastapi import HTTPException, Request, Header
     from fastapi.responses import JSONResponse
     from typing import Annotated
+
+    from myc_http_tools.fastapi.enforce_profile_signature import (
+        active_verifier,
+        header_values,
+        header_values_from_request,
+        verified_profile,
+    )
 
     FASTAPI_AVAILABLE = True
 except ImportError:
@@ -95,6 +111,11 @@ def get_profile_from_request(request: Request) -> Optional[Profile]:
             "FastAPI dependencies not installed. "
             "Install with: pip install mycelium-http-tools[fastapi]"
         )
+
+    verifier = active_verifier()
+    if verifier is not None:
+        return verified_profile(*header_values_from_request(request), verifier)
+
     environment = os.getenv("ENVIRONMENT", "development")
     incoming_headers = dict(request.headers)
 
@@ -159,6 +180,16 @@ async def profile_middleware(request: Request, call_next):
             "FastAPI dependencies not installed. "
             "Install with: pip install mycelium-http-tools[fastapi]"
         )
+
+    signature_enabled, signature_rejection = _enforce_signature_in_middleware(
+        request
+    )
+    if signature_rejection is not None:
+        return signature_rejection
+
+    if signature_enabled:
+        return await call_next(request)
+
     try:
         profile = get_profile_from_request(request)
         request.state.profile = profile
@@ -176,10 +207,37 @@ async def profile_middleware(request: Request, call_next):
     return response
 
 
+def _enforce_signature_in_middleware(request: Request):
+    """Verify when enabled: ``(enabled, rejection_response_or_None)``.
+
+    On success the verified profile is stored in ``request.state.profile``.
+    A response (not an exception) is returned on failure: exceptions raised
+    from an HTTP middleware bypass FastAPI's exception handlers.
+    """
+    try:
+        verifier = active_verifier()
+        if verifier is None:
+            return False, None
+
+        request.state.profile = verified_profile(
+            *header_values_from_request(request), verifier
+        )
+    except HTTPException as error:
+        return True, JSONResponse(
+            status_code=error.status_code, content={"detail": error.detail}
+        )
+
+    return True, None
+
+
 def get_profile_from_header(
     profile_header: Annotated[
         str | None, Header(alias="x-mycelium-profile")
     ] = None,
+    signature_header: Annotated[
+        str | None, Header(alias=DEFAULT_PROFILE_SIGNATURE_KEY)
+    ] = None,
+    request: Request = None,
 ) -> Profile | None:
     """FastAPI dependency to extract profile from x-mycelium-profile header.
 
@@ -202,6 +260,12 @@ def get_profile_from_header(
         raise ImportError(
             "FastAPI dependencies not installed. "
             "Install with: pip install mycelium-http-tools[fastapi]"
+        )
+
+    verifier = active_verifier()
+    if verifier is not None:
+        return verified_profile(
+            *header_values(request, profile_header, signature_header), verifier
         )
 
     environment = os.getenv("ENVIRONMENT", "development")
@@ -245,6 +309,10 @@ def get_profile_from_header(
 
 def get_profile_from_header_required(
     profile_header: Annotated[str, Header(alias="x-mycelium-profile")],
+    signature_header: Annotated[
+        str | None, Header(alias=DEFAULT_PROFILE_SIGNATURE_KEY)
+    ] = None,
+    request: Request = None,
 ) -> Profile:
     """FastAPI dependency to extract profile from x-mycelium-profile header (required).
 
@@ -266,6 +334,12 @@ def get_profile_from_header_required(
         raise ImportError(
             "FastAPI dependencies not installed. "
             "Install with: pip install mycelium-http-tools[fastapi]"
+        )
+
+    verifier = active_verifier()
+    if verifier is not None:
+        return verified_profile(
+            *header_values(request, profile_header, signature_header), verifier
         )
 
     try:
