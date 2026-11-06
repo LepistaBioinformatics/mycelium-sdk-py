@@ -1,8 +1,11 @@
 """Signature enforcement shared by the FastAPI integrations.
 
-When verification is enabled (any ``MYC_PROFILE_PUBLIC_KEY_*``), every
-integration must authenticate the profile before exposing it, in every
-``ENVIRONMENT``: the development leniency never applies to a failed signature.
+When verification is enabled (``MYCELIUM_JWKS_URL``), every integration must
+authenticate the profile before exposing it, in every ``ENVIRONMENT``: the
+development leniency never applies to a failed signature. The keys come from
+the gateway JWKS, so a verification may block while they are (re)fetched:
+the HTTP middleware runs it in a worker thread, and FastAPI already runs the
+synchronous header dependencies in its thread pool.
 
 Responses are generic: 403 ``Unable to verify Mycelium profile`` for any
 rejection, 500 for configuration or internal errors. The detailed ``reason``
@@ -18,13 +21,11 @@ from myc_http_tools.exceptions import (
     ProfileSignatureConfigurationError,
     ProfileSignatureError,
 )
-from myc_http_tools.functions.verify_profile_signature import (
-    verify_and_decode_profile,
-)
 from myc_http_tools.models.profile import Profile
+from myc_http_tools.profile_jwks import JwksProfileSignatureVerifier
 from myc_http_tools.profile_signature_config import (
-    ProfileSignatureVerifier,
     get_profile_signature_verifier,
+    warn_when_signature_is_ignored,
 )
 from myc_http_tools.settings import (
     DEFAULT_PROFILE_KEY,
@@ -38,7 +39,7 @@ REJECTION_DETAIL = "Unable to verify Mycelium profile"
 INTERNAL_DETAIL = "Unable to check user identity. Please contact administrators"
 
 
-def active_verifier() -> Optional[ProfileSignatureVerifier]:
+def active_verifier() -> Optional[JwksProfileSignatureVerifier]:
     """Return the verifier, or ``None`` when verification is disabled.
 
     An invalid configuration fails closed with HTTP 500.
@@ -67,15 +68,13 @@ def _single(values: Sequence[str], missing_reason: str) -> str:
 def verified_profile(
     profile_values: Sequence[str],
     signature_values: Sequence[str],
-    verifier: ProfileSignatureVerifier,
+    verifier: JwksProfileSignatureVerifier,
 ) -> Profile:
     """Authenticate and decode the profile or raise ``HTTPException``."""
     try:
         profile_header = _single(profile_values, "missing_profile")
         signature_header = _single(signature_values, "missing_signature")
-        profile = verify_and_decode_profile(
-            profile_header, signature_header, verifier
-        )
+        profile = verifier.verify_and_decode(profile_header, signature_header)
     except ProfileSignatureError as error:
         logger.warning(
             "profile_signature.verify outcome=rejected reason=%s", error.reason
@@ -90,6 +89,11 @@ def verified_profile(
 
     logger.debug("profile_signature.verify outcome=ok")
     return profile
+
+
+def note_unverified_signature(signature_values: Sequence[str]) -> None:
+    """Warn once when verification is off but a signed profile arrived."""
+    warn_when_signature_is_ignored(len(signature_values) > 0)
 
 
 def header_values_from_request(

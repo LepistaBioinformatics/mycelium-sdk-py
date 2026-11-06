@@ -18,6 +18,10 @@ from myc_http_tools.fastapi import (
     get_profile_from_request,
     profile_middleware,
 )
+from myc_http_tools.profile_jwks import (
+    FetchedProfileJwks,
+    trusted_profile_keys_from_jwks,
+)
 from myc_http_tools.profile_signature_config import (
     configure_profile_signature,
     reset_profile_signature_configuration,
@@ -46,12 +50,15 @@ def test_unexpected_verification_error_is_generic_500_without_handler(
 ):
     import sys
     module = sys.modules["myc_http_tools.fastapi.enforce_profile_signature"]
+    verification = sys.modules[
+        "myc_http_tools.profile_jwks.jwks_profile_signature_verifier"
+    ]
 
     def broken(*_args, **_kwargs):
         raise RuntimeError("PRIVATE-INTERNAL-MARKER")
 
     monkeypatch.setenv("ENVIRONMENT", environment)
-    monkeypatch.setattr(module, "verify_and_decode_profile", broken)
+    monkeypatch.setattr(verification, "verify_and_decode_profile", broken)
     response = get(build_app(entry_point, calls), signed_headers())
     assert response.status_code == 500
     assert response.json() == {"detail": module.INTERNAL_DETAIL}
@@ -109,10 +116,27 @@ def frozen_clock(monkeypatch):
     monkeypatch.setattr(module.time, "time", lambda: float(VALID["nowSeconds"]))
 
 
+# TEST ONLY: RFC 8032 section 7.1 test vector 1 public key (key "1")
+KEY_1_JWKS = (
+    b'{"keys":[{"kty":"OKP","crv":"Ed25519","kid":"1",'
+    b'"x":"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"}]}'
+)
+
+
+def gateway_publishing_key_1(_url):
+    return FetchedProfileJwks(
+        keys=trusted_profile_keys_from_jwks(KEY_1_JWKS), max_age_seconds=600
+    )
+
+
 @pytest.fixture
 def enabled(frozen_clock):
     configure_profile_signature(
-        {"MYC_PROFILE_PUBLIC_KEY_1": CONTRACT["publicKeys"]["1"]}
+        {
+            "MYCELIUM_JWKS_URL": "https://gateway.test/jwks.json",
+            "MYC_PROFILE_SIGNATURE_AUDIENCE": "billing-api",
+        },
+        fetcher=gateway_publishing_key_1,
     )
     yield
     reset_profile_signature_configuration()
@@ -212,7 +236,7 @@ def test_lazy_configuration_error_fails_closed_with_500(
     frozen_clock, monkeypatch, calls, entry_point
 ):
     reset_profile_signature_configuration()
-    monkeypatch.setenv("MYC_PROFILE_PUBLIC_KEY_1", "broken")
+    monkeypatch.setenv("MYCELIUM_JWKS_URL", "ftp://broken")
     monkeypatch.setenv("ENVIRONMENT", "development")
 
     response = get(build_app(entry_point, calls), signed_headers())
@@ -262,3 +286,28 @@ def test_disabled_development_still_allows_missing_profile(
 
     assert response.status_code == 200
     assert response.json() == {"accId": None}
+
+
+def test_disabled_warns_once_about_an_unverified_signature(
+    disabled, calls, caplog
+):
+    app = build_app("header", calls)
+
+    with caplog.at_level("WARNING"):
+        for _ in range(3):
+            assert get(app, signed_headers()).status_code == 200
+
+    warnings = [
+        record for record in caplog.records
+        if "MYCELIUM_JWKS_URL is not set" in record.getMessage()
+    ]
+    assert len(warnings) == 1
+
+
+def test_disabled_without_signature_does_not_warn(disabled, calls, caplog):
+    headers = [(DEFAULT_PROFILE_KEY, VALID["profileHeader"])]
+
+    with caplog.at_level("WARNING"):
+        assert get(build_app("request", calls), headers).status_code == 200
+
+    assert "MYCELIUM_JWKS_URL" not in caplog.text

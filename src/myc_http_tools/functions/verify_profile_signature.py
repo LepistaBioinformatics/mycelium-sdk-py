@@ -6,8 +6,8 @@ Contract (shared with the gateway and the JavaScript SDK):
   key version as ``kid`` in the protected header;
 - claims ``{iat, ph, aud}``: ``ph`` is the unpadded Base64URL SHA-256 of the
   exact ``x-mycelium-profile`` value; ``iat`` is checked against a symmetric,
-  inclusive tolerance window; ``aud`` is compared only when an expected
-  audience is configured.
+  inclusive tolerance window; ``aud`` is compared with the expected
+  audience (always configured by a JWKS-backed downstream).
 
 Checks run in a fixed precedence so every SDK reports the same ``reason``.
 The profile is only decoded after the signature, claims, time window and hash
@@ -26,7 +26,7 @@ from myc_http_tools.functions.decode_and_decompress_profile_from_base64 import (
     decode_and_decompress_profile_from_base64_robust,
 )
 from myc_http_tools.models.profile import Profile
-from myc_http_tools.profile_signature_config import (
+from myc_http_tools.profile_signature_verifier import (
     ProfileSignatureVerifier,
     is_canonical_key_version,
 )

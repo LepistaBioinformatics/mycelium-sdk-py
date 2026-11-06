@@ -4,11 +4,11 @@ This module provides middleware and dependencies for extracting user profiles
 from HTTP headers in FastAPI applications. The profile is expected to be
 Base64-encoded and ZSTD-compressed in the 'x-mycelium-profile' header.
 
-Signature verification: when any ``MYC_PROFILE_PUBLIC_KEY_*`` is configured,
-all four entry points verify ``x-mycelium-profile-signature`` before decoding
-and reject failures with 403 in every environment (see
-``enforce_profile_signature``). Without that configuration the behavior below
-is unchanged.
+Signature verification: when ``MYCELIUM_JWKS_URL`` is configured, all four
+entry points verify ``x-mycelium-profile-signature`` with the keys published
+by the gateway before decoding, and reject failures with 403 in every
+environment (see ``enforce_profile_signature``). Without that configuration
+the behavior below is unchanged, and a signed profile logs one warning.
 """
 
 import logging
@@ -26,12 +26,14 @@ from myc_http_tools.settings import (
 try:
     from fastapi import HTTPException, Request, Header
     from fastapi.responses import JSONResponse
+    from starlette.concurrency import run_in_threadpool
     from typing import Annotated
 
     from myc_http_tools.fastapi.enforce_profile_signature import (
         active_verifier,
         header_values,
         header_values_from_request,
+        note_unverified_signature,
         verified_profile,
     )
 
@@ -113,9 +115,11 @@ def get_profile_from_request(request: Request) -> Optional[Profile]:
         )
 
     verifier = active_verifier()
+    profile_values, signature_values = header_values_from_request(request)
     if verifier is not None:
-        return verified_profile(*header_values_from_request(request), verifier)
+        return verified_profile(profile_values, signature_values, verifier)
 
+    note_unverified_signature(signature_values)
     environment = os.getenv("ENVIRONMENT", "development")
     incoming_headers = dict(request.headers)
 
@@ -181,8 +185,8 @@ async def profile_middleware(request: Request, call_next):
             "Install with: pip install mycelium-http-tools[fastapi]"
         )
 
-    signature_enabled, signature_rejection = _enforce_signature_in_middleware(
-        request
+    signature_enabled, signature_rejection = (
+        await _enforce_signature_in_middleware(request)
     )
     if signature_rejection is not None:
         return signature_rejection
@@ -207,20 +211,23 @@ async def profile_middleware(request: Request, call_next):
     return response
 
 
-def _enforce_signature_in_middleware(request: Request):
+async def _enforce_signature_in_middleware(request: Request):
     """Verify when enabled: ``(enabled, rejection_response_or_None)``.
 
     On success the verified profile is stored in ``request.state.profile``.
     A response (not an exception) is returned on failure: exceptions raised
-    from an HTTP middleware bypass FastAPI's exception handlers.
+    from an HTTP middleware bypass FastAPI's exception handlers. The
+    verification runs in a worker thread: it may fetch the gateway JWKS.
     """
     try:
         verifier = active_verifier()
+        profile_values, signature_values = header_values_from_request(request)
         if verifier is None:
+            note_unverified_signature(signature_values)
             return False, None
 
-        request.state.profile = verified_profile(
-            *header_values_from_request(request), verifier
+        request.state.profile = await run_in_threadpool(
+            verified_profile, profile_values, signature_values, verifier
         )
     except HTTPException as error:
         return True, JSONResponse(
@@ -263,10 +270,13 @@ def get_profile_from_header(
         )
 
     verifier = active_verifier()
+    profile_values, signature_values = header_values(
+        request, profile_header, signature_header
+    )
     if verifier is not None:
-        return verified_profile(
-            *header_values(request, profile_header, signature_header), verifier
-        )
+        return verified_profile(profile_values, signature_values, verifier)
+
+    note_unverified_signature(signature_values)
 
     environment = os.getenv("ENVIRONMENT", "development")
 
@@ -337,10 +347,13 @@ def get_profile_from_header_required(
         )
 
     verifier = active_verifier()
+    profile_values, signature_values = header_values(
+        request, profile_header, signature_header
+    )
     if verifier is not None:
-        return verified_profile(
-            *header_values(request, profile_header, signature_header), verifier
-        )
+        return verified_profile(profile_values, signature_values, verifier)
+
+    note_unverified_signature(signature_values)
 
     try:
         # Decode and decompress the profile from Base64/ZSTD

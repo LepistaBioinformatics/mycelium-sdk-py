@@ -45,13 +45,15 @@ PROFILE_SIGNATURE_INVALID_CODE = "MYC_PROFILE_SIGNATURE_INVALID"
 
 PROFILE_SIGNATURE_CONFIG_INVALID_CODE = "MYC_PROFILE_SIGNATURE_CONFIG_INVALID"
 
+PROFILE_JWKS_FETCH_FAILED_CODE = "MYC_PROFILE_JWKS_FETCH_FAILED"
+
 
 class ProfileSignatureConfigurationError(MyceliumError):
     """Raised when the profile signature verification configuration is invalid.
 
-    Any ``MYC_PROFILE_PUBLIC_KEY_*`` variable means "verification requested":
-    a malformed one must stop the service instead of silently disabling
-    verification. The message names variables, never their values.
+    ``MYCELIUM_JWKS_URL`` means "verification requested": a malformed setting
+    (or an unsafe JWKS document) must stop the service instead of silently
+    disabling verification. The message names variables, never their values.
     """
 
     def __init__(self, message: str):
@@ -76,4 +78,20 @@ class ProfileSignatureError(MyceliumError):
             message=f"Profile signature rejected: {reason}",
             code=PROFILE_SIGNATURE_INVALID_CODE,
             exp_true=True,
+        )
+
+
+class ProfileJwksFetchError(MyceliumError):
+    """Raised when the gateway profile JWKS cannot be downloaded.
+
+    With ``prefetch=True`` at startup it aborts the service. Otherwise a failed
+    download is logged: requests fail closed until a first key set is stored,
+    and a failed refresh keeps the last valid set.
+    """
+
+    def __init__(self, problem: str):
+        super().__init__(
+            message=f"profile_jwks_fetch_failed: {problem}",
+            code=PROFILE_JWKS_FETCH_FAILED_CODE,
+            exp_true=False,
         )
