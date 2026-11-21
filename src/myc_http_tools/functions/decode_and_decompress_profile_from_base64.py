@@ -5,12 +5,14 @@ profile string and return a Profile object.
 """
 
 import base64
+import io
 import json
 import logging
 from typing import Union
 
 from myc_http_tools.exceptions import ProfileDecodingError
 from myc_http_tools.models.profile import Profile
+from myc_http_tools.settings import MAX_PROFILE_DECOMPRESSED_BYTES
 
 try:
     import zstandard as zstd
@@ -70,8 +72,12 @@ def decode_and_decompress_profile_from_base64_robust(
             # `zstd::encode_all`, whose frames do not declare the content
             # size, and `ZstdDecompressor().decompress()` rejects those
             # ("could not determine content size in frame header").
-            decompressor = zstd.ZstdDecompressor().decompressobj()
-            decompressed_profile = decompressor.decompress(decoded_profile)
+            reader = zstd.ZstdDecompressor().stream_reader(
+                io.BytesIO(decoded_profile)
+            )
+            decompressed_profile = reader.read(
+                MAX_PROFILE_DECOMPRESSED_BYTES + 1
+            )
             logger.debug("Successfully decompressed profile using ZSTD")
         except Exception as zstd_error:
             if strict:
@@ -88,6 +94,11 @@ def decode_and_decompress_profile_from_base64_robust(
         # ZSTD not available, use plain Base64
         logger.debug("ZSTD not available, using plain Base64 decoding")
         decompressed_profile = decoded_profile
+
+    if len(decompressed_profile) > MAX_PROFILE_DECOMPRESSED_BYTES:
+        raise ProfileDecodingError(
+            "Decompressed profile exceeds the maximum accepted size"
+        )
 
     # Deserialize from JSON
     try:

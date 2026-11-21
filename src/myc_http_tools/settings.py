@@ -44,6 +44,11 @@ MAX_PROFILE_SIGNATURE_TOLERANCE_SECONDS = 300
 
 MAX_PROFILE_SIGNATURE_BYTES = 4096
 
+# Largest accepted decompressed profile (8 MiB). A header of a few kilobytes
+# can declare hundreds of megabytes of output, so the decoder stops here
+# instead of inflating whatever it is given.
+MAX_PROFILE_DECOMPRESSED_BYTES = 8 * 1024 * 1024
+
 MAX_SAFE_TIMESTAMP_SECONDS = 9_007_199_254_740_991
 
 DEFAULT_EMAIL_KEY = "x-mycelium-email"

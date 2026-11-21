@@ -12,6 +12,7 @@ import base64
 import json
 from uuid import UUID
 
+import pytest
 import zstandard as zstd
 
 from myc_http_tools.functions import decode_and_decompress_profile_from_base64
@@ -236,3 +237,19 @@ class TestProfileContract:
         # snake_case keys must NOT appear at top level
         assert "acc_id" not in payload
         assert "is_subscription" not in payload
+
+
+def test_oversized_decompressed_profile_is_refused():
+    """A small header must not be able to inflate without bound."""
+    from myc_http_tools.exceptions import ProfileDecodingError
+    from myc_http_tools.settings import MAX_PROFILE_DECOMPRESSED_BYTES
+
+    bomb = zstd.ZstdCompressor().compress(
+        b" " * (MAX_PROFILE_DECOMPRESSED_BYTES + 1)
+    )
+    assert len(bomb) < 4096
+
+    with pytest.raises(ProfileDecodingError, match="maximum accepted size"):
+        decode_and_decompress_profile_from_base64(
+            base64.standard_b64encode(bomb).decode("ascii")
+        )
