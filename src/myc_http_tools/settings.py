@@ -27,12 +27,20 @@ PROFILE_JWKS_MIN_MAX_AGE_SECONDS = 60
 
 PROFILE_JWKS_MAX_MAX_AGE_SECONDS = 86_400
 
+# How long an expired key set stays trusted while refreshes fail (1 day).
+# After it, requests fail closed until a refresh succeeds.
+PROFILE_JWKS_MAX_STALE_SECONDS = 86_400
+
 PROFILE_SIGNATURE_TOLERANCE_ENV = "MYC_PROFILE_SIGNATURE_TOLERANCE_SECONDS"
 
 # Expected ``aud``, required whenever verification is enabled.
 PROFILE_SIGNATURE_AUDIENCE_ENV = "MYC_PROFILE_SIGNATURE_AUDIENCE"
 
 DEFAULT_PROFILE_SIGNATURE_TOLERANCE_SECONDS = 60
+
+# Largest accepted ``iat`` tolerance (5 minutes): it is the replay window of
+# a captured signed profile, so a mistyped value must not silently widen it.
+MAX_PROFILE_SIGNATURE_TOLERANCE_SECONDS = 300
 
 MAX_PROFILE_SIGNATURE_BYTES = 4096
 

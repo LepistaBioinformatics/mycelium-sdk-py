@@ -4,7 +4,11 @@
   (``prefetch``). Until a first set is stored, failed attempts are retried
   after a few seconds instead of the full cooldown.
 - Refreshed when ``max-age`` expires; a failed refresh keeps the last valid
-  set and is logged, so a gateway outage never drops trusted keys.
+  set and is logged, so a short gateway outage never drops trusted keys.
+  The set stops being trusted one day after it expired, so a retired key
+  cannot verify forever while refreshes fail.
+- A request never waits for a refresh another request already started
+  while keys are cached: it verifies with the cached set.
 - Refetched once when a signature names an unknown ``kid``, at most once per
   cooldown, and single-flight: concurrent requests share one fetch.
 
@@ -19,7 +23,10 @@ from typing import Any, Callable, Mapping, Optional
 
 from myc_http_tools.profile_jwks.fetch_profile_jwks import FetchedProfileJwks
 from myc_http_tools.profile_jwks.profile_jwks_url import ProfileJwksUrl
-from myc_http_tools.settings import PROFILE_JWKS_EMPTY_RETRY_SECONDS
+from myc_http_tools.settings import (
+    PROFILE_JWKS_EMPTY_RETRY_SECONDS,
+    PROFILE_JWKS_MAX_STALE_SECONDS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +59,14 @@ class ProfileKeyStore:
     def current(self) -> tuple[Mapping[str, Any], int]:
         """The trusted keys now, and the generation they belong to."""
         with self._state:
+            outlived = (
+                self._fresh_until is not None
+                and self._clock()
+                >= self._fresh_until + PROFILE_JWKS_MAX_STALE_SECONDS
+            )
+            if outlived:
+                return MappingProxyType({}), self._generation
+
             return self._keys, self._generation
 
     def prefetch(self) -> None:
@@ -67,8 +82,20 @@ class ProfileKeyStore:
                 self._fresh_until is None or self._clock() >= self._fresh_until
             )
 
-        if is_stale:
+        if not is_stale:
+            return
+
+        if generation == 0:
             self._refresh_from(generation)
+            return
+
+        if not self._refresh.acquire(blocking=False):
+            return
+
+        try:
+            self._refresh_holding(generation)
+        finally:
+            self._refresh.release()
 
     def refresh_after_unknown_key(self, seen_generation: int) -> bool:
         """Refetch after an unknown ``kid``; ``True`` when newer keys exist."""
@@ -76,22 +103,25 @@ class ProfileKeyStore:
 
     def _refresh_from(self, seen_generation: int) -> bool:
         with self._refresh:
-            with self._state:
-                generation = self._generation
-                last_attempt = self._last_attempt
+            return self._refresh_holding(seen_generation)
 
-            if generation != seen_generation:
-                return True
+    def _refresh_holding(self, seen_generation: int) -> bool:
+        """Runs with the refresh lock held."""
+        with self._state:
+            generation = self._generation
+            last_attempt = self._last_attempt
 
-            cooling_down = (
-                last_attempt is not None
-                and self._clock() - last_attempt
-                < self._retry_interval(generation)
-            )
-            if cooling_down:
-                return False
+        if generation != seen_generation:
+            return True
 
-            return self._try_fetch_and_store()
+        cooling_down = (
+            last_attempt is not None
+            and self._clock() - last_attempt < self._retry_interval(generation)
+        )
+        if cooling_down:
+            return False
+
+        return self._try_fetch_and_store()
 
     def _retry_interval(self, generation: int) -> float:
         """The cooldown, shortened while no key set was ever stored, so a
@@ -116,10 +146,11 @@ class ProfileKeyStore:
         return True
 
     def _fetch_and_store(self) -> None:
-        with self._state:
-            self._last_attempt = self._clock()
-
-        fetched = self._fetcher(self._url)
+        try:
+            fetched = self._fetcher(self._url)
+        finally:
+            with self._state:
+                self._last_attempt = self._clock()
 
         with self._state:
             self._keys = MappingProxyType(dict(fetched.keys))

@@ -91,19 +91,24 @@ def env_for(**extra):
     return env
 
 
-@pytest.mark.parametrize("raw", ["9007199254740992", "9" * 5000])
-def test_tolerance_overflow_matches_javascript_configuration_error(raw):
+@pytest.mark.parametrize(
+    "raw", ["301", "86400", "9007199254740991", "9" * 5000, "060", ""]
+)
+def test_tolerance_above_five_minutes_is_a_configuration_error(raw):
     with pytest.raises(ProfileSignatureConfigurationError):
         load_profile_signature_verifier_from_env(
             env_for(MYC_PROFILE_SIGNATURE_TOLERANCE_SECONDS=raw)
         )
 
 
-def test_tolerance_accepts_maximum_safe_integer():
+@pytest.mark.parametrize(
+    "raw, seconds", [("1", 1), (" 120 ", 120), ("300", 300)]
+)
+def test_tolerance_accepts_up_to_five_minutes(raw, seconds):
     verifier = load_profile_signature_verifier_from_env(
-        env_for(MYC_PROFILE_SIGNATURE_TOLERANCE_SECONDS="9007199254740991")
+        env_for(MYC_PROFILE_SIGNATURE_TOLERANCE_SECONDS=raw)
     )
-    assert verifier.tolerance_seconds == 9_007_199_254_740_991
+    assert verifier.tolerance_seconds == seconds
 
 
 def test_oversized_key_version_is_not_parsed_as_an_unbounded_integer():

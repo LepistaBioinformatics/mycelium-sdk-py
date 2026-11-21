@@ -97,6 +97,26 @@ def test_cache_control_vector(case):
     )
 
 
+@pytest.mark.parametrize(
+    "case",
+    CONTRACT["urls"],
+    ids=[
+        f"{case['configured']!r}-{case['allowInsecureHttp']}"
+        for case in CONTRACT["urls"]
+    ],
+)
+def test_jwks_url_vector(case):
+    def resolve():
+        try:
+            return ProfileJwksUrl.parse(
+                case["configured"], case["allowInsecureHttp"]
+            ).value
+        except ProfileSignatureConfigurationError:
+            return None
+
+    assert resolve() == case["resolved"]
+
+
 def test_published_document_parses_with_both_keys():
     assert outcome(CONTRACT["published"]) == ("valid", ["1", "2"])
 
@@ -368,6 +388,146 @@ def test_after_the_first_set_the_full_cooldown_applies():
     assert gateway.fetches == 1
 
 
+def test_the_retry_interval_counts_from_the_end_of_a_failed_fetch():
+    gateway = FakeGateway(["1"])
+    gateway.publish(None)
+    now = [1000.0]
+
+    def hanging(url):
+        now[0] += 5.0
+        return gateway(url)
+
+    store = ProfileKeyStore(URL, hanging, 30, clock=lambda: now[0])
+    target = JwksProfileSignatureVerifier(store, 60, "svc")
+
+    with pytest.raises(ProfileSignatureError):
+        verify(target, "1")
+    assert gateway.fetches == 1, "the queued retry returns without fetching"
+
+    now[0] += 5.0
+    with pytest.raises(ProfileSignatureError):
+        verify(target, "1")
+    assert gateway.fetches == 2
+
+
+class HeldGateway:
+    """A fetcher that can be held inside the fetch until released."""
+
+    def __init__(self, gateway):
+        self.gateway = gateway
+        self.hold = False
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def __call__(self, url):
+        if self.hold:
+            self.entered.set()
+            self.release.wait(5)
+
+        return self.gateway(url)
+
+
+def test_an_expired_set_never_waits_for_a_refresh_in_progress():
+    gateway = FakeGateway(["1"], max_age_seconds=600)
+    held = HeldGateway(gateway)
+    now = [1000.0]
+    store = ProfileKeyStore(URL, held, 0, clock=lambda: now[0])
+    target = JwksProfileSignatureVerifier(store, 60, "svc")
+    target.prefetch()
+    now[0] += 601
+    held.hold = True
+
+    refresher = threading.Thread(target=store.refresh_if_stale)
+    refresher.start()
+    assert held.entered.wait(5)
+
+    started = time.monotonic()
+    assert verify(target, "1").is_staff
+    elapsed = time.monotonic() - started
+    in_progress = refresher.is_alive()
+    held.release.set()
+    refresher.join()
+
+    assert in_progress, "verified while the other refresh was running"
+    assert elapsed < 2.0
+    assert gateway.fetches == 2
+
+
+def test_an_empty_store_waits_for_the_first_fetch_in_progress():
+    gateway = FakeGateway(["1"])
+    held = HeldGateway(gateway)
+    held.hold = True
+    store = ProfileKeyStore(URL, held, 30)
+
+    first = threading.Thread(target=store.refresh_if_stale)
+    first.start()
+    assert held.entered.wait(5)
+    second = threading.Thread(target=store.refresh_if_stale)
+    second.start()
+    second.join(0.2)
+    waited = second.is_alive()
+    held.release.set()
+    first.join()
+    second.join()
+
+    assert waited, "no keys yet: the request waits for the fetch"
+    assert gateway.fetches == 1
+    assert sorted(store.current()[0]) == ["1"]
+
+
+def test_an_unknown_kid_waits_for_a_refresh_in_progress():
+    gateway = FakeGateway(["1"], max_age_seconds=600)
+    held = HeldGateway(gateway)
+    now = [1000.0]
+    store = ProfileKeyStore(URL, held, 0, clock=lambda: now[0])
+    store.prefetch()
+    now[0] += 601
+    gateway.publish(["1", "2"])
+    held.hold = True
+
+    refresher = threading.Thread(target=store.refresh_if_stale)
+    refresher.start()
+    assert held.entered.wait(5)
+    results = []
+    waiter = threading.Thread(
+        target=lambda: results.append(store.refresh_after_unknown_key(1))
+    )
+    waiter.start()
+    waiter.join(0.2)
+    waited = waiter.is_alive()
+    held.release.set()
+    refresher.join()
+    waiter.join()
+
+    assert waited
+    assert results == [True]
+    assert gateway.fetches == 2
+
+
+def test_a_set_expired_for_a_day_is_no_longer_trusted():
+    from myc_http_tools.settings import PROFILE_JWKS_MAX_STALE_SECONDS
+
+    gateway = FakeGateway(["1"], max_age_seconds=600)
+    now = [1000.0]
+    store = ProfileKeyStore(URL, gateway, 30, clock=lambda: now[0])
+    target = JwksProfileSignatureVerifier(store, 60, "svc")
+    target.prefetch()
+    gateway.publish(None)
+
+    now[0] = 1600.0 + PROFILE_JWKS_MAX_STALE_SECONDS - 1
+    assert verify(target, "1").is_staff, "still within the stale window"
+
+    now[0] = 1600.0 + PROFILE_JWKS_MAX_STALE_SECONDS
+    assert dict(store.current()[0]) == {}
+    with pytest.raises(ProfileSignatureError) as rejected:
+        verify(target, "1")
+    assert rejected.value.reason == "unknown_key"
+
+    gateway.publish(["1"])
+    now[0] += 31
+    assert verify(target, "1").is_staff, "a successful refresh restores trust"
+
+
 def test_non_canonical_kid_never_triggers_a_fetch():
     import base64
 
@@ -392,19 +552,22 @@ def test_non_canonical_kid_never_triggers_a_fetch():
 # ? ---------------------------------------------------------------------------
 
 
+JWKS_PATH = "/.well-known/mycelium-profile-jwks.json"
+
+
 class _Gateway(http.server.BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         routes = {
-            "/jwks.json": (
+            JWKS_PATH: (
                 200,
                 {"Cache-Control": "public, max-age=600"},
                 jwks(["1", "2"]),
             ),
-            "/huge.json": (200, {}, b" " * (70 * 1024)),
-            "/redirect.json": (302, {"Location": "/jwks.json"}, b""),
-            "/missing.json": (404, {}, b""),
+            f"/huge{JWKS_PATH}": (200, {}, b" " * (70 * 1024)),
+            f"/redirect{JWKS_PATH}": (302, {"Location": JWKS_PATH}, b""),
+            f"/missing{JWKS_PATH}": (404, {}, b""),
         }
-        if self.path == "/slow.json":
+        if self.path == f"/slow{JWKS_PATH}":
             self._drip(jwks(["1", "2"]))
             return
 
@@ -448,14 +611,14 @@ def local(base: str, path: str) -> ProfileJwksUrl:
 
 
 def test_fetches_the_set_and_its_cache_lifetime_over_http(local_gateway):
-    fetched = fetch_profile_jwks(local(local_gateway, "/jwks.json"))
+    fetched = fetch_profile_jwks(local(local_gateway, ""))
 
     assert sorted(fetched.keys) == ["1", "2"]
     assert fetched.max_age_seconds == 600
 
 
 @pytest.mark.parametrize(
-    "path", ["/missing.json", "/huge.json", "/redirect.json"]
+    "path", ["/missing", "/huge", "/redirect"]
 )
 def test_refuses_errors_oversized_bodies_and_redirects(local_gateway, path):
     with pytest.raises(ProfileJwksFetchError):
@@ -470,7 +633,7 @@ def test_a_slow_server_cannot_hold_the_fetch_past_the_deadline(
 
     with pytest.raises(ProfileJwksFetchError, match="exceeded"):
         fetch_profile_jwks(
-            local(local_gateway, "/slow.json"), timeout_seconds=1.0
+            local(local_gateway, "/slow"), timeout_seconds=1.0
         )
 
     assert time.monotonic() - started < 2.0

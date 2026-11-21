@@ -15,7 +15,7 @@ contract (`perm` serialized as `"read"`/`"write"`).
 
 - Python **>= 3.12**
 - The `fastapi` extra pulls in `zstandard` (required to decode/encode compressed profiles)
-  and `fastapi`
+  and `fastapi`; the `signature` extra also pulls in `zstandard`
 
 ## Install
 
@@ -26,7 +26,7 @@ pip install mycelium-http-tools
 # With the FastAPI adapter (+ zstandard)
 pip install mycelium-http-tools[fastapi]
 
-# With profile signature verification (PyJWT[crypto])
+# With profile signature verification (PyJWT[crypto] + zstandard)
 pip install mycelium-http-tools[fastapi,signature]
 
 # Development (all extras + tooling)
@@ -143,13 +143,16 @@ caches them and verifies every signature locally.
 > signing in the gateway.
 
 Enable it by installing the `signature` extra and pointing the SDK at the
-gateway JWKS:
+gateway. `MYCELIUM_JWKS_URL` accepts either the complete JWKS endpoint or just
+the gateway address (`mycelium.example.com`, `https://mycelium.example.com/prod`),
+to which `/.well-known/mycelium-profile-jwks.json` is appended; `https://` is
+assumed when no scheme is given:
 
 ```bash
 export MYCELIUM_JWKS_URL="https://gateway.internal/.well-known/mycelium-profile-jwks.json"
 # Required with MYCELIUM_JWKS_URL: this service's name as registered in the gateway
 export MYC_PROFILE_SIGNATURE_AUDIENCE=billing-api
-# Optional: accepted clock skew, both directions (default 60 seconds)
+# Optional: accepted clock skew, both directions (default 60 seconds, 1..300)
 export MYC_PROFILE_SIGNATURE_TOLERANCE_SECONDS=60
 # Local development only: accept an http:// JWKS URL (logs a warning)
 # export MYCELIUM_JWKS_ALLOW_INSECURE_HTTP=true
@@ -202,7 +205,10 @@ Key handling follows the gateway contract (`jwks-vectors.json`):
 - until a first set is downloaded, a failed attempt is retried after
   5 seconds, so a service started before the gateway recovers quickly;
 - if a refresh fails, the last valid set is kept and the failure is logged
-  (standard `logging`);
+  (standard `logging`); one day (86400 seconds) after the set expired it
+  stops being trusted and requests fail closed until a refresh succeeds;
+- while keys are cached, a request never waits for a refresh another request
+  already started: it verifies with the cached set;
 - the fetch is bounded (5 seconds in total, 64 KiB, redirects never followed)
   and a set with private material, another key type, a wrong key length or
   a non-canonical/repeated `kid` is refused as a whole.
@@ -210,8 +216,8 @@ Key handling follows the gateway contract (`jwks-vectors.json`):
 Any present but invalid setting (non-`https` URL without the development
 switch, URL with credentials, missing audience, invalid tolerance, a value
 other than `true`/`false` for the switch, missing `signature` extra) is a
-configuration error, never "verification disabled". Tolerance must be a
-positive integer <= 9007199254740991, matching the other SDKs. The JWKS URL
+configuration error, never "verification disabled". Tolerance must be an
+integer between 1 and 300 (seconds), matching the other SDKs. The JWKS URL
 comes only from configuration, never from a request.
 
 Custom integrations can call the verifier directly; the raw decoder

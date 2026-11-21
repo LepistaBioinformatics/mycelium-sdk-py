@@ -44,7 +44,7 @@ from myc_http_tools.profile_signature_verifier import (  # noqa: F401
 )
 from myc_http_tools.settings import (
     DEFAULT_PROFILE_SIGNATURE_TOLERANCE_SECONDS,
-    MAX_SAFE_TIMESTAMP_SECONDS,
+    MAX_PROFILE_SIGNATURE_TOLERANCE_SECONDS,
     PROFILE_JWKS_ALLOW_INSECURE_HTTP_ENV,
     PROFILE_JWKS_REFETCH_COOLDOWN_SECONDS,
     PROFILE_JWKS_URL_ENV,
@@ -66,10 +66,11 @@ def _parse_tolerance(environ: Mapping[str, str]) -> int:
     if (
         len(trimmed) > 16
         or not _CANONICAL_POSITIVE.fullmatch(trimmed)
-        or int(trimmed) > MAX_SAFE_TIMESTAMP_SECONDS
+        or int(trimmed) > MAX_PROFILE_SIGNATURE_TOLERANCE_SECONDS
     ):
         raise ProfileSignatureConfigurationError(
-            f"{PROFILE_SIGNATURE_TOLERANCE_ENV} must be a positive integer"
+            f"{PROFILE_SIGNATURE_TOLERANCE_ENV} must be an integer between "
+            f"1 and {MAX_PROFILE_SIGNATURE_TOLERANCE_SECONDS}"
         )
 
     return int(trimmed)
