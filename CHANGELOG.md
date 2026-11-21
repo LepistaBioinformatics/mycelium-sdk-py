@@ -1,3 +1,16 @@
+## v0.3.0 (2026-11-21)
+
+### Feat
+
+- harden profile signature verification and accept the gateway base URL
+- verify profile signatures with the gateway JWKS
+- verify the gateway profile signature
+
+### Fix
+
+- cap the decompressed profile size
+- decode gateway profiles whose ZSTD frame omits the content size
+
 ## v0.2.0 (2026-07-19)
 
 ### Feat
