@@ -3,4 +3,6 @@ version = "0.3.0"
 version_files = ["src/myc_http_tools/__version__.py", "pyproject.toml"]
 name = "cz_conventional_commits"
 tag_format = "v$version"
+# bump.yml pushes with `git push --follow-tags`, which only sends annotated tags
+annotated_tag = true
 bump_message = "bump: $current_version → $new_version [skip-ci]"
