@@ -15,7 +15,7 @@ contract (`perm` serialized as `"read"`/`"write"`).
 
 - Python **>= 3.12**
 - The `fastapi` extra pulls in `zstandard` (required to decode/encode compressed profiles)
-  and `fastapi`
+  and `fastapi`; the `signature` extra also pulls in `zstandard`
 
 ## Install
 
@@ -26,8 +26,11 @@ pip install mycelium-http-tools
 # With the FastAPI adapter (+ zstandard)
 pip install mycelium-http-tools[fastapi]
 
+# With profile signature verification (PyJWT[crypto] + zstandard)
+pip install mycelium-http-tools[fastapi,signature]
+
 # Development (all extras + tooling)
-pip install mycelium-http-tools[dev,fastapi]
+pip install mycelium-http-tools[dev,fastapi,signature]
 ```
 
 ## Core usage
@@ -92,7 +95,7 @@ async def admin(profile: Profile = Depends(get_profile_from_header_required)):
 
 ```python
 from fastapi import FastAPI, Request
-from fastapi.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 from myc_http_tools.fastapi import profile_middleware
 
 app = FastAPI()
@@ -123,12 +126,133 @@ header resolves to `None`; in production a missing header responds `403` and an 
 header `401`. The environment is read from the `ENVIRONMENT` variable (default
 `development`).
 
+## Profile signature verification (opt-in)
+
+When the gateway is configured with `[core.profileSigning]`, it adds
+`x-mycelium-profile-signature` to every request that carries
+`x-mycelium-profile`: a compact JWS (`alg: EdDSA`, `kid: <key version>`) over
+`{iat, ph, aud}`, where `ph` is the SHA-256 of the exact profile header and
+`aud` the downstream service name. The gateway publishes its public keys as a
+JWKS at `/.well-known/mycelium-profile-jwks.json`; this SDK downloads them,
+caches them and verifies every signature locally.
+
+> **Rollout order is mandatory.** Confirm the gateway in front of this service
+> is already signing **before** setting `MYCELIUM_JWKS_URL` here. A service
+> that verifies behind a gateway that does not sign rejects every request
+> (403). To roll back, unset `MYCELIUM_JWKS_URL` here first, then disable
+> signing in the gateway.
+
+Enable it by installing the `signature` extra and pointing the SDK at the
+gateway. `MYCELIUM_JWKS_URL` accepts either the complete JWKS endpoint or just
+the gateway address (`mycelium.example.com`, `https://mycelium.example.com/prod`),
+to which `/.well-known/mycelium-profile-jwks.json` is appended; `https://` is
+assumed when no scheme is given:
+
+```bash
+export MYCELIUM_JWKS_URL="https://gateway.internal/.well-known/mycelium-profile-jwks.json"
+# Required with MYCELIUM_JWKS_URL: this service's name as registered in the gateway
+export MYC_PROFILE_SIGNATURE_AUDIENCE=billing-api
+# Optional: accepted clock skew, both directions (default 60 seconds, 1..300)
+export MYC_PROFILE_SIGNATURE_TOLERANCE_SECONDS=60
+# Local development only: accept an http:// JWKS URL (logs a warning)
+# export MYCELIUM_JWKS_ALLOW_INSECURE_HTTP=true
+```
+
+Configure at startup so a misconfigured service never starts.
+`configure_profile_signature()` validates the settings; the JWKS is downloaded
+on the **first signed request**, and requests fail closed (403) until it is
+available. Requests only reach this service through the gateway, so the
+gateway is up when that first request arrives: the service never depends on
+the gateway to start (both can start in any order). Pass
+`prefetch=True` to download the keys at startup instead (blocking, at most
+5 seconds; raises `ProfileJwksFetchError` when the gateway is unreachable).
+Without `configure_profile_signature()` the settings are loaded on first use
+and invalid settings make requests fail with 500:
+
+```python
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from myc_http_tools import configure_profile_signature
+
+@asynccontextmanager
+async def lifespan(app):
+    # raises ProfileSignatureConfigurationError (invalid settings);
+    # the keys are downloaded on the first signed request
+    configure_profile_signature()
+    yield
+
+app = FastAPI(lifespan=lifespan)
+```
+
+With `MYCELIUM_JWKS_URL` set, the four FastAPI entry points
+(`get_profile_from_request`, `profile_middleware`,
+`get_profile_from_header`, `get_profile_from_header_required`) verify before
+decoding and answer **403** `Unable to verify Mycelium profile` on any
+signature rejection, **in every `ENVIRONMENT`**: the development leniency never applies to
+a failed signature. Duplicate profile/signature headers are rejected. Without
+that variable nothing changes, except that a signed profile logs one warning
+per process (`MYCELIUM_JWKS_URL` is not set, so nothing is verified). The
+required header dependency preserves FastAPI 422 when the profile header is
+absent. Internal/configuration errors return generic 500 and never run the
+handler.
+
+Key handling follows the gateway contract (`jwks-vectors.json`):
+
+- the set is cached for the `max-age` sent by the gateway (bounded to
+  1 minute..1 day, 12 hours when absent), then refreshed;
+- a signature with an unknown `kid` triggers one refetch, at most every
+  30 seconds, so gateway key rotation needs no change or restart here;
+- until a first set is downloaded, a failed attempt is retried after
+  5 seconds, so a service started before the gateway recovers quickly;
+- if a refresh fails, the last valid set is kept and the failure is logged
+  (standard `logging`); one day (86400 seconds) after the set expired it
+  stops being trusted and requests fail closed until a refresh succeeds;
+- while keys are cached, a request never waits for a refresh another request
+  already started: it verifies with the cached set;
+- the fetch is bounded (5 seconds in total, 64 KiB, redirects never followed)
+  and a set with private material, another key type, a wrong key length or
+  a non-canonical/repeated `kid` is refused as a whole.
+
+Any present but invalid setting (non-`https` URL without the development
+switch, URL with credentials, missing audience, invalid tolerance, a value
+other than `true`/`false` for the switch, missing `signature` extra) is a
+configuration error, never "verification disabled". Tolerance must be an
+integer between 1 and 300 (seconds), matching the other SDKs. The JWKS URL
+comes only from configuration, never from a request.
+
+Custom integrations can call the verifier directly; the raw decoder
+`decode_and_decompress_profile_from_base64` does **not** verify anything:
+
+```python
+from myc_http_tools import load_profile_signature_verifier_from_env
+
+verifier = load_profile_signature_verifier_from_env()  # once, at startup
+if verifier is None:
+    raise RuntimeError("Profile verification must be configured for this service")
+# optional: download the keys now (raises ProfileJwksFetchError);
+# otherwise they are downloaded on the first verify_and_decode call
+verifier.prefetch()
+profile = verifier.verify_and_decode(profile_header, signature_header)
+```
+
+`verify_and_decode` may block while keys are (re)fetched; call it from a
+worker thread in async code.
+
+Limits (by design): a captured valid pair can be replayed to the same service
+during the tolerance window; only `x-mycelium-profile` is signed, so derive
+identity from the profile, not from `x-mycelium-email`/`x-mycelium-role`
+alone. Mount the middleware only where a profile is required: public or
+health routes do not receive a profile from the gateway.
+
 ## Error handling
 
 All SDK errors extend `MyceliumError` (`message`, `code`, `exp_true`):
 
 | Error | Code | Raised by |
 |---|---|---|
+| `ProfileSignatureError` | `MYC_PROFILE_SIGNATURE_INVALID` | `verify_profile_signature` / `verify_and_decode_profile` (carries a log-safe `reason`) |
+| `ProfileSignatureConfigurationError` | `MYC_PROFILE_SIGNATURE_CONFIG_INVALID` | Invalid `MYCELIUM_JWKS_*` / `MYC_PROFILE_SIGNATURE_*` setting, or an unsafe JWKS |
+| `ProfileJwksFetchError` | `MYC_PROFILE_JWKS_FETCH_FAILED` | The gateway JWKS could not be downloaded (`prefetch=True` at startup: abort) |
 | `ProfileDecodingError` | `MYC00020` | `decode_and_decompress_profile_from_base64` on any decode failure |
 | `InsufficientLicensesError` | `MYC00019` | `get_related_account_or_error()` when licensed resources are present but empty |
 | `InsufficientPrivilegesError` | `MYC00019` | Any method requiring a privilege the profile lacks (carries `filtering_state`) |

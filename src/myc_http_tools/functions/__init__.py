@@ -7,9 +7,17 @@ from myc_http_tools.functions.compress_and_encode_profile_to_base64 import (
 from myc_http_tools.functions.decode_and_decompress_profile_from_base64 import (
     decode_and_decompress_profile_from_base64_robust as decode_and_decompress_profile_from_base64,
 )
+from myc_http_tools.functions.verify_profile_signature import (
+    profile_header_hash,
+    verify_and_decode_profile,
+    verify_profile_signature,
+)
 
 __all__ = [
     "ProfileDecodingError",
     "compress_and_encode_profile_to_base64",
     "decode_and_decompress_profile_from_base64",
+    "profile_header_hash",
+    "verify_and_decode_profile",
+    "verify_profile_signature",
 ]
