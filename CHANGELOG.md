@@ -1,12 +1,12 @@
-## Unreleased
+## v0.4.0 (2026-11-22)
 
 ### Feat
 
-- federated grants in the profile: `Profile.federated_resources` (wire member `federatedResources`, a list of `FederatedResource` with an `issuer`), plus the opt-in `with_federated()` and `from_issuer()` filters; every other filter still sees local grants only
+- federated grants in the profile
 
 ### Fix
 
-- `with_federated()` and `from_issuer()` called after another filter fail closed instead of re-adding unfiltered federated grants
+- federated opt-ins only open a chain
 
 ## v0.3.0 (2026-11-21)
 
