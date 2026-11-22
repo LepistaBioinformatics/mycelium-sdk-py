@@ -193,3 +193,29 @@ def test_shared_vector_with_federated_resources():
     assert count(from_issuer.with_roles(["federated-role"])) == 1
     assert from_issuer.with_roles(["local-role"]).licensed_resources is None
     assert count(profile.with_roles(["local-role"])) == 1
+
+
+def test_federated_opt_ins_after_another_filter_fail_closed():
+    profile = federated_profile()
+    local_tenant = profile.licensed_resources.to_licenses_vector()[0].tenant_id
+    federated_tenant = profile.federated_resources[0].tenant_id
+
+    late_widen = profile.on_tenant(local_tenant).with_federated()
+    assert late_widen.licensed_resources is None
+    assert late_widen.filtering_state == [
+        f"1:tenantId:{local_tenant}",
+        "2:withFederated:true",
+    ]
+
+    late_issuer = profile.with_roles(["reader"]).from_issuer(ISSUER_A)
+    assert late_issuer.licensed_resources is None
+    assert late_issuer.filtering_state == [
+        "1:role:reader",
+        f"2:issuer:{ISSUER_A}",
+    ]
+
+    opened = profile.with_federated().on_tenant(federated_tenant)
+    assert count(opened) == 1
+    assert opened.licensed_resources.to_licenses_vector()[0].acc_id == (
+        profile.federated_resources[0].acc_id
+    )

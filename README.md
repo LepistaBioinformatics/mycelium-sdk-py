@@ -57,7 +57,8 @@ Every filter method returns a copy — the original `Profile` is never mutated.
 Grants the user holds on peer gateway instances arrive in `profile.federated_resources`
 (wire member `federatedResources`; each one is a licensed resource plus the `issuer` peer
 instance id). Every filter above works on the local `licensed_resources` only, so a chain
-never mistakes a foreign grant for a local one unless it opts in:
+never mistakes a foreign grant for a local one unless it opts in. Both opt-ins must come
+first in a chain: called after another filter they fail closed (no licensed resources):
 
 ```python
 # Local grants plus every federated grant

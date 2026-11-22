@@ -182,11 +182,16 @@ class Profile(BaseModel):
     # --------------------------------------------------------------------------
 
     def with_federated(self) -> Self:
-        """Add every federated grant (issuer dropped) to the local ones."""
+        """Add every federated grant (issuer dropped) to the local ones.
+
+        Must come first in a chain: called after another filter it fails
+        closed (no licensed resources), so it never re-adds unfiltered grants.
+        """
         grants: list[LicensedResource] = []
-        if self.licensed_resources is not None:
+        opens_chain = not self.filtering_state
+        if opens_chain and self.licensed_resources is not None:
             grants.extend(self.licensed_resources.to_licenses_vector())
-        if self.federated_resources is not None:
+        if opens_chain and self.federated_resources is not None:
             grants.extend(
                 resource.to_licensed_resource()
                 for resource in self.federated_resources
@@ -203,12 +208,20 @@ class Profile(BaseModel):
 
     def from_issuer(self, issuer_id: UUID) -> Self:
         """Keep only the federated grants the given peer asserted, without
-        the local ones."""
-        grants = [
-            resource.to_licensed_resource()
-            for resource in self.federated_resources or []
-            if resource.issuer == issuer_id
-        ]
+        the local ones.
+
+        Must come first in a chain: called after another filter it fails
+        closed (no licensed resources), so it never re-adds unfiltered grants.
+        """
+        grants = (
+            []
+            if self.filtering_state
+            else [
+                resource.to_licensed_resource()
+                for resource in self.federated_resources or []
+                if resource.issuer == issuer_id
+            ]
+        )
 
         return self.model_copy(
             update={
