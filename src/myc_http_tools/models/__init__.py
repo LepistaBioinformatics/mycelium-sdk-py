@@ -1,3 +1,4 @@
+from .federated_resources import FederatedResource
 from .licensed_resources import LicensedResources
 from .owner import Owner
 from .permission import Permission
@@ -7,6 +8,7 @@ from .tenants_ownership import TenantsOwnership
 from .verbose_status import VerboseStatus
 
 __all__ = [
+    "FederatedResource",
     "LicensedResources",
     "Owner",
     "Permission",
