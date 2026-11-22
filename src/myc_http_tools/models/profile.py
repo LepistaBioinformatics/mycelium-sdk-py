@@ -8,6 +8,7 @@ from myc_http_tools.exceptions import (
     InsufficientLicensesError,
     InsufficientPrivilegesError,
 )
+from myc_http_tools.models.federated_resources import FederatedResource
 from myc_http_tools.models.licensed_resources import (
     LicensedResource,
     LicensedResources,
@@ -54,6 +55,7 @@ class Profile(BaseModel):
     account_was_deleted: bool
     verbose_status: Optional[VerboseStatus] = None
     licensed_resources: Optional[LicensedResources] = None
+    federated_resources: Optional[list[FederatedResource]] = None
     tenants_ownership: Optional[TenantsOwnership] = None
     meta: Optional[dict] = None
     filtering_state: Optional[list[str]] = None
@@ -170,6 +172,51 @@ class Profile(BaseModel):
         """Keep resources whose role is in the given list."""
         return self.__apply_filter(
             lambda r: r.role in roles, "role", ",".join(roles)
+        )
+
+    # --------------------------------------------------------------------------
+    # FEDERATION
+    #
+    # Every other filter works on licensed_resources only, so without these a
+    # chain sees local grants alone.
+    # --------------------------------------------------------------------------
+
+    def with_federated(self) -> Self:
+        """Add every federated grant (issuer dropped) to the local ones."""
+        grants: list[LicensedResource] = []
+        if self.licensed_resources is not None:
+            grants.extend(self.licensed_resources.to_licenses_vector())
+        if self.federated_resources is not None:
+            grants.extend(
+                resource.to_licensed_resource()
+                for resource in self.federated_resources
+            )
+
+        return self.model_copy(
+            update={
+                "licensed_resources": (
+                    LicensedResources(records=grants) if grants else None
+                ),
+                "filtering_state": self.__next_state("withFederated", "true"),
+            }
+        )
+
+    def from_issuer(self, issuer_id: UUID) -> Self:
+        """Keep only the federated grants the given peer asserted, without
+        the local ones."""
+        grants = [
+            resource.to_licensed_resource()
+            for resource in self.federated_resources or []
+            if resource.issuer == issuer_id
+        ]
+
+        return self.model_copy(
+            update={
+                "licensed_resources": (
+                    LicensedResources(records=grants) if grants else None
+                ),
+                "filtering_state": self.__next_state("issuer", str(issuer_id)),
+            }
         )
 
     # --------------------------------------------------------------------------

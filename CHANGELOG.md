@@ -1,3 +1,9 @@
+## Unreleased
+
+### Feat
+
+- federated grants in the profile: `Profile.federated_resources` (wire member `federatedResources`, a list of `FederatedResource` with an `issuer`), plus the opt-in `with_federated()` and `from_issuer()` filters; every other filter still sees local grants only
+
 ## v0.3.0 (2026-11-21)
 
 ### Feat

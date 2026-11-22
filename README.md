@@ -52,6 +52,21 @@ related_accounts = (
 
 Every filter method returns a copy — the original `Profile` is never mutated.
 
+### Federated grants
+
+Grants the user holds on peer gateway instances arrive in `profile.federated_resources`
+(wire member `federatedResources`; each one is a licensed resource plus the `issuer` peer
+instance id). Every filter above works on the local `licensed_resources` only, so a chain
+never mistakes a foreign grant for a local one unless it opts in:
+
+```python
+# Local grants plus every federated grant
+profile.with_federated().with_roles(["admin"]).get_related_account_or_error()
+
+# Only the grants one peer instance asserted (local grants dropped)
+profile.from_issuer(issuer_id).with_roles(["admin"]).get_ids_or_error()
+```
+
 `decode_and_decompress_profile_from_base64` raises `ProfileDecodingError` on any failure
 (empty input, invalid Base64, failed decompression, or invalid JSON). It is strict by
 default; pass `strict=False` to fall back to treating the payload as uncompressed (useful
